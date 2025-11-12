@@ -4,16 +4,11 @@ from pathlib import Path
 import PyPDF2
 import time
 import re
-import subprocess # Required for combine_audio_files
-import shutil     # Required for fallback combine
-from typing import Any, Dict, List, Optional, Tuple
-
-# --- LLM and TTS Imports ---
 from groq import Groq, RateLimitError
 from gtts import gTTS # Stable replacement for Edge TTS
-# NOTE: asyncio and edge_tts are REMOVED to prevent server crash
-# ---------------------------
-
+import subprocess
+import shutil
+from typing import Any, Dict, List, Optional, Tuple
 
 class PDFToPodcastConverter:
     """
@@ -210,7 +205,7 @@ EXPERT: This content focuses on {text_snippet}. It's a fascinating subject with 
 HOST: That sounds intriguing! Can you elaborate on the key points?
 EXPERT: Absolutely. The first major concept revolves around understanding the fundamental principles and how they interconnect.
 HOST: How does this apply in real-world scenarios?
-EXPERT: Great question! In practice, these ideas help us solve complex problems by providing a structured framework.
+EXPERT: Great question! In practice, these ideas help us solve complex problems systematically.
 HOST: Are there any common misconceptions people have about this topic?
 EXPERT: Yes, many people initially think it's more complicated than it actually is. Once you understand the core ideas, everything else falls into place.
 HOST: That's really helpful context. What should listeners remember most?
@@ -278,8 +273,6 @@ EXPERT: My pleasure! I hope this has been valuable for everyone listening."""
     # --- REPLACED FUNCTION (gTTS Implementation) ---
     def synthesize_speech(self, dialogue, output_dir="podcast_output"):
         """Convert dialogue to speech using gTTS, simulating two distinct voices."""
-        
-        # NOTE: Import gTTS is done at the top of the file
         
         Path(output_dir).mkdir(exist_ok=True)
         audio_files = []
