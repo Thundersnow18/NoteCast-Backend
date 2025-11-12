@@ -1,5 +1,3 @@
-from dotenv import load_dotenv
-load_dotenv()
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 from pdf_podcast_converter import PDFToPodcastConverter
