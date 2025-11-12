@@ -4,13 +4,21 @@ from pathlib import Path
 import PyPDF2
 import time
 import re
+import subprocess # Required for combine_audio_files
+import shutil     # Required for fallback combine
+from typing import Any, Dict, List, Optional, Tuple
+
+# --- LLM and TTS Imports ---
 from groq import Groq, RateLimitError
-from typing import Any, Dict, List, Optional, Tuple 
+from gtts import gTTS # Stable replacement for Edge TTS
+# NOTE: asyncio and edge_tts are REMOVED to prevent server crash
+# ---------------------------
+
 
 class PDFToPodcastConverter:
     """
     Converts PDF documents into engaging multi-speaker podcast format.
-    Uses free local AI models (Ollama) and Edge TTS.
+    Uses Groq for LLM and gTTS for audio synthesis.
     """
     
     def __init__(self, openai_api_key=None, elevenlabs_api_key=None, anthropic_api_key=None):
@@ -20,7 +28,6 @@ class PDFToPodcastConverter:
         if not self.api_key:
             print("⚠️ WARNING: GROQ_API_KEY environment variable not found. Script generation will fail.")
         
-        # We don't need the Ollama URL anymore.
         self.client = Groq(api_key=self.api_key) if self.api_key else None
         self.model_id = "llama-3.1-8b-instant" # Ultra-fast and great for this task
         
@@ -59,7 +66,6 @@ class PDFToPodcastConverter:
         
         return chunks
     
-    # --- UPDATED: Added section_num and total_sections for continuity ---
     def _build_prompt(self, text_sample, preferences, section_num=1, total_sections=1):
         """Build customized prompt based on user preferences and section context."""
         
@@ -140,7 +146,6 @@ Create the podcast dialogue following the format above:"""
         
         return prompt
     
-    # --- UPDATED: Switched from Ollama requests to Groq SDK ---
     def generate_podcast_script(self, text, preferences=None, section_num=1, total_sections=1):
         """Generate script using Groq SDK with custom preferences."""
         
@@ -187,7 +192,6 @@ Create the podcast dialogue following the format above:"""
                 
         except RateLimitError as e:
             print(f"✗ Groq Rate Limit Error (429): {e}")
-            # This is critical: When you hit the limit, you must handle it gracefully.
             print("⚠️ Recommending a short delay before trying the next chunk.")
             return self._create_fallback_script(text)
             
@@ -271,62 +275,52 @@ EXPERT: My pleasure! I hope this has been valuable for everyone listening."""
         
         return cleaned_dialogue
     
+    # --- REPLACED FUNCTION (gTTS Implementation) ---
     def synthesize_speech(self, dialogue, output_dir="podcast_output"):
-        """Convert dialogue to speech using Edge TTS (free, better quality)."""
-        import asyncio
-        import edge_tts
+        """Convert dialogue to speech using gTTS, simulating two distinct voices."""
+        
+        # NOTE: Import gTTS is done at the top of the file
         
         Path(output_dir).mkdir(exist_ok=True)
         audio_files = []
         
+        # Define voice/accent mapping for gTTS:
         voices = {
-            'HOST': 'en-US-GuyNeural',
-            'EXPERT': 'en-US-JennyNeural'
+            # Use 'en' for standard voice
+            'HOST': 'en',    
+            # Use 'co.in' for Indian English accent (provides distinction)
+            'EXPERT': 'co.in' 
         }
         
-        async def generate_audio(text, voice, filename):
-            """Generate single audio file."""
-            communicate = edge_tts.Communicate(text, voice)
-            await communicate.save(filename)
-        
-        print(f"\n🎵 Generating audio with Edge TTS for {len(dialogue)} segments...")
-        
+        print(f"\n🎵 Generating audio for {len(dialogue)} segments using gTTS...")
+
         for idx, segment in enumerate(dialogue):
             speaker = segment['speaker']
             text = segment['text']
             
             if not text or len(text.strip()) < 3:
-                print(f"  Skipping empty segment {idx + 1}")
                 continue
-            
-            print(f"  [{idx + 1}/{len(dialogue)}] {speaker}: {text[:50]}...")
-            
-            max_retries = 2
-            for attempt in range(max_retries):
-                try:
-                    filename = f"{output_dir}/segment_{idx:03d}_{speaker}.mp3"
-                    
-                    asyncio.run(generate_audio(text, voices[speaker], filename))
-                    
-                    if os.path.exists(filename) and os.path.getsize(filename) > 1000:
-                        audio_files.append(filename)
-                        print(f"    ✓ Generated ({os.path.getsize(filename)} bytes)")
-                        break
-                    else:
-                        print(f"    ✗ File too small (attempt {attempt + 1})")
-                        if attempt < max_retries - 1:
-                            time.sleep(1)
-                        
-                except Exception as e:
-                    print(f"    ✗ Error (attempt {attempt + 1}): {e}")
-                    if attempt < max_retries - 1:
-                        time.sleep(2)
-                    else:
-                        print(f"    ✗ Failed after {max_retries} attempts, skipping segment")
-        
-        print(f"\n✓ Successfully generated {len(audio_files)} audio segments")
+
+            try:
+                filename = f"{output_dir}/segment_{idx:03d}_{speaker}.mp3"
+                
+                # gTTS Implementation uses the accent from the 'voices' map
+                tts = gTTS(text=text, lang=voices[speaker])
+                tts.save(filename)
+                
+                if os.path.exists(filename) and os.path.getsize(filename) > 1000:
+                    audio_files.append(filename)
+                    print(f"    ✓ Segment {idx + 1} ({speaker}) generated successfully.")
+                
+            except Exception as e:
+                print(f"    ✗ gTTS Error for segment {idx + 1}: {e}")
+                # Add a small delay if gTTS hits its own rate limit
+                time.sleep(1)
+
+        print(f"✓ Generated {len(audio_files)} audio files")
         return audio_files
-    
+    # ---------------------------------------------
+
     def combine_audio_files(self, audio_files, output_path="final_podcast.mp3"):
         """Combine all audio segments using ffmpeg directly."""
         if not audio_files:
@@ -337,7 +331,8 @@ EXPERT: My pleasure! I hope this has been valuable for everyone listening."""
         print(f"Output: {output_path}")
         
         try:
-            import subprocess
+            # Need to import subprocess here since we removed it globally
+            import subprocess 
             
             list_file = output_path.replace('.mp3', '_filelist.txt')
             
@@ -470,7 +465,8 @@ EXPERT: My pleasure! I hope this has been valuable for everyone listening."""
             json.dump(all_dialogue, f, indent=2)
         print(f"✓ Script saved to: {script_path}")
         
-        print(f"\n🎵 Synthesizing speech with Edge TTS...")
+        # --- Synthesize Speech (Now using stable gTTS) ---
+        print(f"\n🎵 Synthesizing speech with gTTS...")
         audio_files = self.synthesize_speech(all_dialogue, output_dir=output_dir)
         
         print(f"\n🎧 Combining audio segments...")
