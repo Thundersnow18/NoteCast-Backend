@@ -2,5 +2,5 @@ Flask
 flask-cors
 PyPDF2
 groq
-edge-tts
+gtts
 gunicorn
