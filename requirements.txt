@@ -2,6 +2,5 @@ Flask
 flask-cors
 PyPDF2
 groq
-google-cloud-texttospeech
-google-auth
+edge-tts
 gunicorn
