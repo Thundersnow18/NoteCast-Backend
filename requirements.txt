@@ -1,6 +1,5 @@
 Flask
 flask-cors
 PyPDF2
-groq
+ollama
 edge-tts
-gunicorn
