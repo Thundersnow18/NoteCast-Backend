@@ -1,119 +1,131 @@
+from flask import Flask, request, jsonify, send_file
+from flask_cors import CORS
+from pdf_podcast_converter import PDFToPodcastConverter
 import os
 import json
-import time
-from flask import Flask, request, jsonify, send_from_directory
 from werkzeug.utils import secure_filename
-from pathlib import Path
-from flask_cors import CORS
-
-# Import your PDFToPodcastConverter class
-from pdf_podcast_converter import PDFToPodcastConverter
-
-# --- Configuration ---
-UPLOAD_FOLDER = Path('uploads')
-OUTPUT_FOLDER = Path('output')
-ALLOWED_EXTENSIONS = {'pdf'}
-
-# Ensure folders exist
-UPLOAD_FOLDER.mkdir(exist_ok=True)
-OUTPUT_FOLDER.mkdir(exist_ok=True)
 
 app = Flask(__name__)
-# Enable CORS for communication with the Vercel frontend (allow all for deployment simplicity)
-CORS(app, resources={r"/api/*": {"origins": "*"}}) 
+CORS(app)
 
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-app.config['OUTPUT_FOLDER'] = OUTPUT_FOLDER
 
+UPLOAD_FOLDER = 'uploads'
+OUTPUT_FOLDER = 'output'
+ALLOWED_EXTENSIONS = {'pdf'}
+
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+
+
+converter = PDFToPodcastConverter()
 
 def allowed_file(filename):
-    """Checks if the uploaded file is a PDF."""
-    return '.' in filename and \
-           filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
-# --- API ENDPOINTS ---
+@app.route('/api/health', methods=['GET'])
+def health_check():
+    return jsonify({'status': 'ok', 'message': 'NoteCast API is running'})
 
 @app.route('/api/convert', methods=['POST'])
 def convert_pdf():
-    """Handles PDF upload and conversion."""
-    
-    # 1. Check for file and required API Key
-    if 'pdf' not in request.files:
-        return jsonify({"error": "No PDF file part in the request."}), 400
-    
-    file = request.files['pdf']
-    if file.filename == '':
-        return jsonify({"error": "No selected file."}), 400
-    
-    if not os.getenv("GROQ_API_KEY"):
-        return jsonify({"error": "GROQ_API_KEY not set. Cannot run script generation."}), 500
-
-    if file and allowed_file(file.filename):
-        pdf_path = None
-        try:
-            # 2. Securely save the uploaded PDF
-            filename = secure_filename(file.filename)
-            pdf_path = app.config['UPLOAD_FOLDER'] / filename
-            file.save(pdf_path)
-
-            # 3. Parse preferences from the frontend
-            preferences_json = request.form.get('preferences', '{}')
-            preferences = json.loads(preferences_json)
-
-            # 4. Define unique output filename and path
-            base_name = filename.rsplit('.', 1)[0]
-            output_filename = f"{base_name}_{int(time.time())}.mp3"
-            output_path = app.config['OUTPUT_FOLDER'] / output_filename
+    try:
+        if 'pdf' not in request.files:
+            return jsonify({'error': 'No PDF file provided'}), 400
+        
+        pdf_file = request.files['pdf']
+        
+        
+        preferences = {}
+        if 'preferences' in request.form:
+            try:
+                preferences = json.loads(request.form['preferences'])
+                print(f"User preferences: {preferences}")
+            except json.JSONDecodeError:
+                print("Could not parse preferences, using defaults")
+                preferences = {}
+        
+        if pdf_file.filename == '':
+            return jsonify({'error': 'No file selected'}), 400
+        
+        if not allowed_file(pdf_file.filename):
+            return jsonify({'error': 'Invalid file type'}), 400
+        
+        filename = secure_filename(pdf_file.filename)
+        pdf_path = os.path.join(UPLOAD_FOLDER, filename)
+        pdf_file.save(pdf_path)
+        
+        output_filename = filename.replace('.pdf', '.mp3')
+        output_path = os.path.join(OUTPUT_FOLDER, output_filename)
+        
+        print(f"\n{'='*60}")
+        print(f"Converting: {filename}")
+        print(f"Output path: {output_path}")
+        print(f"Preferences: {preferences}")
+        print(f"{'='*60}\n")
+        
+        
+        result = converter.convert_pdf_to_podcast(
+            pdf_path=pdf_path,
+            output_path=output_path,
+            max_pages=3,
+            preferences=preferences
+        )
+        
+        
+        actual_output = result['output_path']
+        
+        print(f"\n{'='*60}")
+        print(f"Conversion complete!")
+        print(f"Result path: {actual_output}")
+        print(f"File exists: {os.path.exists(actual_output)}")
+        
+        if os.path.exists(actual_output):
+            file_size = os.path.getsize(actual_output)
+            print(f"File size: {file_size} bytes")
             
-            # 5. Initialize and run the converter
-            converter = PDFToPodcastConverter()
             
-            print(f"Starting conversion for {filename} -> {output_filename}")
+            if actual_output != output_path:
+                import shutil
+                shutil.copy(actual_output, output_path)
+                print(f"Copied to: {output_path}")
             
-            result = converter.convert_pdf_to_podcast(
-                pdf_path=str(pdf_path),
-                output_path=str(output_path),
-                preferences=preferences
-            )
-
-            # 6. Clean up the uploaded PDF immediately after conversion
-            if os.path.exists(pdf_path):
-                os.remove(pdf_path)
-
-            if result['output_path']:
-                # 7. Success response to the frontend
-                return jsonify({
-                    "message": "Conversion successful",
-                    "filename": output_filename,
-                    "transcript": result['transcript']
-                }), 200
-            else:
-                return jsonify({"error": "Podcast generation failed to produce an output file."}), 500
-
-        except Exception as e:
-            # General error handling and cleanup
-            print(f"FATAL SERVER ERROR: {e}")
-            
-            # Ensure file cleanup happens even on error
-            if pdf_path and os.path.exists(pdf_path):
-                 os.remove(pdf_path)
-            
-            return jsonify({"error": f"Internal server processing failed: {str(e)}"}), 500
-
-    return jsonify({"error": "Invalid file type or processing error."}), 400
-
+            actual_filename = os.path.basename(output_path)
+        else:
+            print(f"✗ File not found at: {actual_output}")
+            print(f"Files in output folder: {os.listdir(OUTPUT_FOLDER)}")
+            return jsonify({'error': 'Audio file not created'}), 500
+        
+        print(f"Returning filename: {actual_filename}")
+        print(f"{'='*60}\n")
+        
+        return jsonify({
+            'success': True,
+            'filename': actual_filename,
+            'transcript': result['transcript']
+        })
+        
+    except Exception as e:
+        print(f"\n{'='*60}")
+        print(f"ERROR during conversion:")
+        print(f"{str(e)}")
+        import traceback
+        traceback.print_exc()
+        print(f"{'='*60}\n")
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/download/<filename>', methods=['GET'])
 def download_podcast(filename):
-    """Serves the final MP3 file back to the frontend for playback and download."""
-    
-    # Use send_from_directory for secure file serving
-    return send_from_directory(
-        app.config['OUTPUT_FOLDER'], 
-        filename, 
-        as_attachment=False, 
-        mimetype='audio/mpeg'
-    )
+    try:
+        file_path = os.path.join(OUTPUT_FOLDER, secure_filename(filename))
+        if not os.path.exists(file_path):
+            return jsonify({'error': 'File not found'}), 404
+        
+        return send_file(file_path, mimetype='audio/mpeg', as_attachment=False)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
-    app.run(debug=True, port=5000)
+    print("🚀 Starting NoteCast API Server...")
+    print("📍 Server running on http://localhost:5000")
+    print("📄 Upload endpoint: http://localhost:5000/api/convert")
+    app.run(debug=True, port=5000, host='0.0.0.0')
