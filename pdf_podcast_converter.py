@@ -139,11 +139,11 @@ Create the podcast dialogue following the format above:"""
         max_tokens = length_tokens.get(preferences.get('length', 'medium'), 1000)
         
         try:
-            print(f"🤖 Generating {preferences.get('tone', 'conversational')} script with Ollama...")
+            print(f"🤖 Generating {preferences.get('tone', 'conversational')} script with Ollama (llama3.2:latest)...")
             response = requests.post(
                 self.ollama_url,
                 json={
-                    "model": "llama3.2",
+                    "model": "llama3.2:latest",
                     "prompt": prompt,
                     "stream": False,
                     "options": {
@@ -167,11 +167,13 @@ Create the podcast dialogue following the format above:"""
                 
                 return script
             else:
-                print(f"✗ Ollama error: {response.status_code}")
+                print(f"✗ Ollama HTTP error: {response.status_code} - {response.text}")
                 return self._create_fallback_script(text)
                 
         except Exception as e:
-            print(f"✗ Ollama error: {e}")
+            print(f"✗ Ollama connection error: {e}")
+            import traceback
+            traceback.print_exc()
             return self._create_fallback_script(text)
     
     def _create_fallback_script(self, text):
@@ -194,42 +196,47 @@ HOST: Excellent advice! Thank you so much for sharing your insights.
 EXPERT: My pleasure! I hope this has been valuable for everyone listening."""
     
     def parse_dialogue(self, script):
-        """Parse the script into speaker-dialogue pairs."""
+        """Parse the script into speaker-dialogue pairs using regex flexibility."""
+        import re
         lines = script.strip().split('\n')
         dialogue = []
         
         for line in lines:
             line = line.strip()
-            
-            
             if not line:
                 continue
                 
-            if line.startswith('HOST:'):
-                text = line.replace('HOST:', '').strip()
-                if text:
+            # Match formats like HOST:, **HOST:**, Host:, **Host:**, EXPERT:, **EXPERT:**
+            match = re.match(r'^\s*(?:\*\*)?(HOST|EXPERT|Host|Expert)(?:\*\*)?\s*:\s*(.*)', line, re.IGNORECASE)
+            
+            if match:
+                speaker_raw = match.group(1).upper()
+                text_content = match.group(2).strip()
+                
+                speaker = 'HOST' if 'HOST' in speaker_raw else 'EXPERT'
+                
+                if text_content:
                     dialogue.append({
-                        'speaker': 'HOST',
-                        'text': text
-                    })
-            elif line.startswith('EXPERT:'):
-                text = line.replace('EXPERT:', '').strip()
-                if text:
-                    dialogue.append({
-                        'speaker': 'EXPERT',
-                        'text': text
+                        'speaker': speaker,
+                        'text': text_content
                     })
             elif line and dialogue:
-                
-                dialogue[-1]['text'] += ' ' + line
-        
+                # Append multi-line spoken content to current speaker
+                # Ignore meta introductory lines before first speaker tag
+                cleaned_line = line.replace('**', '').replace('*', '').strip()
+                if not cleaned_line.startswith(('Here is', 'Sure', 'Note:', 'Podcast Script')):
+                    dialogue[-1]['text'] += ' ' + cleaned_line
         
         cleaned_dialogue = []
         for entry in dialogue:
             text = entry['text'].strip()
-            text = text.replace('**', '').replace('*', '')
+            text = text.replace('**', '').replace('*', '').strip()
             
-            if len(text) > 5:
+            # Remove any trailing orphan speaker labels (e.g. text ending with 'HOST:' or 'HOST')
+            text = re.sub(r'\s*(?:HOST|EXPERT)\s*:?\s*$', '', text, flags=re.IGNORECASE).strip()
+            
+            # Ensure text is not just a speaker label or empty
+            if len(text) > 3 and text.upper() not in ['HOST', 'EXPERT', 'HOST:', 'EXPERT:']:
                 cleaned_dialogue.append({
                     'speaker': entry['speaker'],
                     'text': text
@@ -241,7 +248,7 @@ EXPERT: My pleasure! I hope this has been valuable for everyone listening."""
             print(f"  {i+1}. {seg['speaker']}: {seg['text'][:60]}...")
         
         if not cleaned_dialogue:
-            print("⚠ No dialogue parsed, using fallback")
+            print("⚠ No dialogue parsed from LLM output, using fallback script")
             cleaned_dialogue = [
                 {'speaker': 'HOST', 'text': 'Welcome to this podcast episode about your document.'},
                 {'speaker': 'EXPERT', 'text': 'Thank you for having me. Let me share the key insights from this material.'}
@@ -253,29 +260,56 @@ EXPERT: My pleasure! I hope this has been valuable for everyone listening."""
         """Convert dialogue to speech using Edge TTS (free, better quality)."""
         import asyncio
         import edge_tts
+        import random
         
         Path(output_dir).mkdir(exist_ok=True)
         audio_files = []
         
+        # High-quality HD & natural expressive neural voices from Edge TTS
+        male_voices = [
+            'en-US-AndrewNeural',      # Warm, expressive US Male
+            'en-US-BrianNeural',       # Natural US Male
+            'en-US-ChristopherNeural', # Deep US Male
+            'en-GB-RyanNeural',        # Professional UK Male
+        ]
         
+        female_voices = [
+            'en-US-AvaNeural',         # Expressive HD US Female
+            'en-US-EmmaNeural',        # Conversational US Female
+            'en-US-MichelleNeural',    # Friendly US Female
+            'en-GB-SoniaNeural',       # Clear UK Female
+        ]
+        
+        # Randomly choose speaker gender combo for each podcast run
+        # 50% chance: Host=Male, Expert=Female; 50% chance: Host=Female, Expert=Male
+        if random.choice([True, False]):
+            host_voice = random.choice(male_voices)
+            expert_voice = random.choice(female_voices)
+        else:
+            host_voice = random.choice(female_voices)
+            expert_voice = random.choice(male_voices)
+            
         voices = {
-            'HOST': 'en-US-GuyNeural',
-            'EXPERT': 'en-US-JennyNeural'
+            'HOST': host_voice,
+            'EXPERT': expert_voice
         }
+        
+        print(f"\n🎙️  Selected Voice Pair -> HOST: {voices['HOST']} | EXPERT: {voices['EXPERT']}")
         
         async def generate_audio(text, voice, filename):
             """Generate single audio file."""
             communicate = edge_tts.Communicate(text, voice)
             await communicate.save(filename)
         
-        print(f"\nGenerating audio with Edge TTS for {len(dialogue)} segments...")
+        print(f"Generating audio with Edge TTS for {len(dialogue)} segments...")
+
         
         for idx, segment in enumerate(dialogue):
             speaker = segment['speaker']
             text = segment['text']
             
-            if not text or len(text.strip()) < 3:
-                print(f"  Skipping empty segment {idx + 1}")
+            if not text or len(text.strip()) < 3 or text.strip().upper() in ['HOST', 'EXPERT', 'HOST:', 'EXPERT:']:
+                print(f"  Skipping orphan/empty segment {idx + 1}")
                 continue
             
             print(f"  [{idx + 1}/{len(dialogue)}] {speaker}: {text[:50]}...")
