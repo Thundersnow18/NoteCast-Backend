@@ -15,13 +15,17 @@ class PDFToPodcastConverter:
         self.ollama_url = "http://localhost:11434/api/generate"
         print("✓ Using free local AI models")
         
-    def extract_text_from_pdf(self, pdf_path):
-        """Extract all text content from PDF file."""
+    def extract_text_from_pdf(self, pdf_path, max_pages=None):
+        """Extract text content from PDF up to max_pages."""
         text = ""
         with open(pdf_path, 'rb') as file:
             pdf_reader = PyPDF2.PdfReader(file)
-            for page in pdf_reader.pages:
-                text += page.extract_text() + "\n"
+            total_pages = len(pdf_reader.pages)
+            pages_to_read = min(total_pages, max_pages) if max_pages else total_pages
+            for i in range(pages_to_read):
+                page_text = pdf_reader.pages[i].extract_text()
+                if page_text:
+                    text += page_text + "\n"
         return text
     
     def chunk_text(self, text, max_chars=3000):
@@ -434,7 +438,7 @@ EXPERT: My pleasure! I hope this has been valuable for everyone listening."""
         print(f"📄 Extracting text from PDF: {pdf_path}")
         print(f"🎨 Preferences: {preferences}")
         
-        text = self.extract_text_from_pdf(pdf_path)
+        text = self.extract_text_from_pdf(pdf_path, max_pages=max_pages)
         
         if max_pages:
             text = text[:max_pages * 3000]

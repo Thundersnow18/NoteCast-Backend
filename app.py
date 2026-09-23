@@ -8,6 +8,12 @@ from werkzeug.utils import secure_filename
 app = Flask(__name__)
 CORS(app)
 
+# Limit uploads to 25MB
+app.config['MAX_CONTENT_LENGTH'] = 25 * 1024 * 1024
+
+@app.errorhandler(413)
+def request_entity_too_large(error):
+    return jsonify({'error': 'File is too large. Maximum allowed size is 25MB.'}), 413
 
 UPLOAD_FOLDER = 'uploads'
 OUTPUT_FOLDER = 'output'
