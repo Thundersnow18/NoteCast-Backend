@@ -13,7 +13,9 @@ app.config['MAX_CONTENT_LENGTH'] = 25 * 1024 * 1024
 
 @app.errorhandler(413)
 def request_entity_too_large(error):
-    return jsonify({'error': 'File is too large. Maximum allowed size is 25MB.'}), 413
+    resp = jsonify({'error': 'File is too large. Maximum allowed size is 25MB.'})
+    resp.headers.add("Access-Control-Allow-Origin", "*")
+    return resp, 413
 
 UPLOAD_FOLDER = 'uploads'
 OUTPUT_FOLDER = 'output'
