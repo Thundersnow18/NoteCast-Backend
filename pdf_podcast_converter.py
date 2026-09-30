@@ -129,18 +129,16 @@ Create the podcast dialogue following the format above:"""
             preferences = {}
         
         
-        text_sample = text[:2000].replace('\n', ' ')
-        
+        text_sample = text[:3500].strip()
         
         prompt = self._build_prompt(text_sample, preferences)
         
-        
         length_tokens = {
-            'short': 600,
-            'medium': 1000,
-            'long': 1500
+            'short': 800,
+            'medium': 1400,
+            'long': 2000
         }
-        max_tokens = length_tokens.get(preferences.get('length', 'medium'), 1000)
+        max_tokens = length_tokens.get(preferences.get('length', 'medium'), 1400)
         
         try:
             print(f"🤖 Generating {preferences.get('tone', 'conversational')} script with Ollama (llama3.2:latest)...")
@@ -429,9 +427,103 @@ EXPERT: My pleasure! I hope this has been valuable for everyone listening."""
         
         return None
     
-    def convert_pdf_to_podcast(self, pdf_path, output_path="podcast.mp3", max_pages=None, preferences=None):
-        """Main method: Convert PDF to complete podcast with user preferences."""
+    def summarize_section(self, section_text):
+        """Map Phase: Extract dense, high-signal bullet takeaways from a document section."""
+        prompt = f"""You are an executive research analyst. Extract the 2-3 most important findings, arguments, or insights from this document excerpt.
+Be factual, dense, and concise (bullet points only).
+
+Document Excerpt:
+{section_text[:3500]}
+
+Key Takeaways:"""
+        try:
+            response = requests.post(
+                self.ollama_url,
+                json={
+                    "model": "llama3.2:latest",
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {
+                        "temperature": 0.3,
+                        "num_predict": 180,
+                        "stop": ["USER:", "ASSISTANT:", "Document Excerpt:"],
+                        "num_ctx": 2048
+                    }
+                },
+                timeout=45
+            )
+            if response.status_code == 200:
+                summary = response.json().get('response', '').strip()
+                if summary:
+                    return summary
+        except Exception as e:
+            print(f"  ⚠ Section summarization failed: {e}")
         
+        # Fallback snippet
+        return f"- {section_text[:200].replace(chr(10), ' ')}"
+
+    def reduce_summaries(self, section_summaries):
+        """Reduce Phase: Combine section summaries into a master thematic outline."""
+        combined_text = "\n\n".join(section_summaries)
+        
+        if len(combined_text) <= 2500:
+            return combined_text
+            
+        print("  🔄 Reducing multiple section summaries into a unified master outline...")
+        prompt = f"""Synthesize and consolidate the following section keypoints from a full document into a unified master outline.
+Organize into cohesive themes: Main Thesis, Key Evidence/Arguments, and Conclusions/Implications.
+
+Section Keypoints:
+{combined_text[:4000]}
+
+Unified Master Outline:"""
+        try:
+            response = requests.post(
+                self.ollama_url,
+                json={
+                    "model": "llama3.2:latest",
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {
+                        "temperature": 0.4,
+                        "num_predict": 400,
+                        "stop": ["USER:", "ASSISTANT:"],
+                        "num_ctx": 2048
+                    }
+                },
+                timeout=60
+            )
+            if response.status_code == 200:
+                reduced = response.json().get('response', '').strip()
+                if reduced:
+                    return reduced
+        except Exception as e:
+            print(f"  ⚠ Reduce phase failed: {e}")
+            
+        return combined_text[:2500]
+
+    def map_reduce_document(self, full_text, chunk_size=3500):
+        """Hierarchical Map-Reduce pipeline on text of any length."""
+        chunks = self.chunk_text(full_text, max_chars=chunk_size)
+        
+        if len(chunks) <= 1:
+            print("📄 Document fits in a single chunk, skipping Map-Reduce.")
+            return full_text
+            
+        print(f"\n🗺️  [Map Phase] Summarizing {len(chunks)} sections across the full document...")
+        section_summaries = []
+        for idx, chunk in enumerate(chunks):
+            print(f"   ↳ Summarizing section {idx + 1}/{len(chunks)}...")
+            summary = self.summarize_section(chunk)
+            section_summaries.append(f"Section {idx + 1}:\n{summary}")
+            
+        print(f"\n📉 [Reduce Phase] Synthesizing {len(section_summaries)} section summaries...")
+        master_outline = self.reduce_summaries(section_summaries)
+        print(f"✓ Master document outline synthesized ({len(master_outline)} chars)")
+        return master_outline
+
+    def convert_pdf_to_podcast(self, pdf_path, output_path="podcast.mp3", max_pages=None, preferences=None):
+        """Main method: Convert PDF of any length to complete podcast using Map-Reduce."""
         if preferences is None:
             preferences = {}
         
@@ -439,40 +531,17 @@ EXPERT: My pleasure! I hope this has been valuable for everyone listening."""
         print(f"🎨 Preferences: {preferences}")
         
         text = self.extract_text_from_pdf(pdf_path, max_pages=max_pages)
+        print(f"📝 Extracted {len(text)} characters from document")
         
-        if max_pages:
-            text = text[:max_pages * 3000]
+        if not text.strip():
+            raise ValueError("No extractable text found in PDF. It might be scanned/image-only.")
+
+        # Map-Reduce: Compress full document into a rich master outline
+        master_content = self.map_reduce_document(text, chunk_size=3500)
         
-        print(f"📝 Extracted {len(text)} characters")
-        
-        
-        chunk_size = {
-            'short': 2000,
-            'medium': 3000,
-            'long': 4000
-        }.get(preferences.get('length', 'medium'), 3000)
-        
-        chunks = self.chunk_text(text, max_chars=chunk_size)
-        
-        
-        max_chunks = 1 if preferences.get('length') == 'short' else 2
-        chunks = chunks[:max_chunks]
-        
-        print(f"📚 Processing {len(chunks)} section(s)")
-        
-        all_dialogue = []
-        
-        for i, chunk in enumerate(chunks):
-            print(f"\n🎙️  Generating podcast script for section {i+1}/{len(chunks)}...")
-            script = self.generate_podcast_script(chunk, preferences)
-            dialogue = self.parse_dialogue(script)
-            all_dialogue.extend(dialogue)
-            
-            if i < len(chunks) - 1:
-                all_dialogue.append({
-                    'speaker': 'HOST',
-                    'text': "Let's continue with the next section."
-                })
+        print("\n🎙️  Generating comprehensive podcast script from full document context...")
+        script = self.generate_podcast_script(master_content, preferences)
+        all_dialogue = self.parse_dialogue(script)
         
         script_path = output_path.replace('.mp3', '_script.json')
         with open(script_path, 'w') as f:

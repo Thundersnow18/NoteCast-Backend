@@ -75,7 +75,7 @@ def convert_pdf():
         result = converter.convert_pdf_to_podcast(
             pdf_path=pdf_path,
             output_path=output_path,
-            max_pages=3,
+            max_pages=None,
             preferences=preferences
         )
         
