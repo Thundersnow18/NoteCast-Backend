@@ -129,19 +129,19 @@ Create the podcast dialogue following the format above:"""
             preferences = {}
         
         
-        text_sample = text[:3500].strip()
+        text_sample = text[:8000].strip()
         
         prompt = self._build_prompt(text_sample, preferences)
         
         length_tokens = {
-            'short': 800,
-            'medium': 1400,
-            'long': 2000
+            'short': 600,
+            'medium': 950,
+            'long': 1400
         }
-        max_tokens = length_tokens.get(preferences.get('length', 'medium'), 1400)
+        max_tokens = length_tokens.get(preferences.get('length', 'medium'), 950)
         
         try:
-            print(f"🤖 Generating {preferences.get('tone', 'conversational')} script with Ollama (llama3.2:latest)...")
+            print(f"🤖 Generating {preferences.get('tone', 'conversational')} script with Ollama (llama3.2:latest, 4k ctx)...")
             response = requests.post(
                 self.ollama_url,
                 json={
@@ -149,10 +149,10 @@ Create the podcast dialogue following the format above:"""
                     "prompt": prompt,
                     "stream": False,
                     "options": {
-                        "temperature": 0.9 if preferences.get('humor') else 0.7,
+                        "temperature": 0.85 if preferences.get('humor') else 0.7,
                         "num_predict": max_tokens,
                         "stop": ["USER:", "ASSISTANT:"],
-                        "num_ctx": 2048
+                        "num_ctx": 4096
                     }
                 },
                 timeout=120
@@ -445,9 +445,9 @@ Key Takeaways:"""
                     "stream": False,
                     "options": {
                         "temperature": 0.3,
-                        "num_predict": 180,
+                        "num_predict": 90,
                         "stop": ["USER:", "ASSISTANT:", "Document Excerpt:"],
-                        "num_ctx": 2048
+                        "num_ctx": 4096
                     }
                 },
                 timeout=45
@@ -486,9 +486,9 @@ Unified Master Outline:"""
                     "stream": False,
                     "options": {
                         "temperature": 0.4,
-                        "num_predict": 400,
+                        "num_predict": 300,
                         "stop": ["USER:", "ASSISTANT:"],
-                        "num_ctx": 2048
+                        "num_ctx": 4096
                     }
                 },
                 timeout=60
@@ -502,28 +502,52 @@ Unified Master Outline:"""
             
         return combined_text[:2500]
 
-    def map_reduce_document(self, full_text, chunk_size=3500):
-        """Hierarchical Map-Reduce pipeline on text of any length."""
-        chunks = self.chunk_text(full_text, max_chars=chunk_size)
+    def extract_strategic_slices(self, full_text, max_slices=4, slice_size=3500):
+        """Extract up to max_slices evenly distributed across documents of any length."""
+        total_len = len(full_text)
+        if total_len <= slice_size * max_slices:
+            return self.chunk_text(full_text, max_chars=slice_size)
+            
+        slices = []
+        step = (total_len - slice_size) / (max_slices - 1)
+        for i in range(max_slices):
+            start_idx = int(i * step)
+            end_idx = min(start_idx + slice_size, total_len)
+            slice_text = full_text[start_idx:end_idx].strip()
+            if slice_text:
+                slices.append(slice_text)
+        return slices
+
+    def map_reduce_document(self, full_text):
+        """Adaptive pipeline: Single-pass fast lane for <=12k chars, or smart 4-slice Map-Reduce for large/mega docs."""
+        total_chars = len(full_text)
         
-        if len(chunks) <= 1:
-            print("📄 Document fits in a single chunk, skipping Map-Reduce.")
+        # 1. FAST LANE: <= 12,000 characters (~5-8 pages) -> Ingest directly in 1 single LLM call!
+        if total_chars <= 12000:
+            print(f"⚡ [Fast-Lane Engine] Document is {total_chars} chars (~{max(1, round(total_chars/2500, 1))} pages). Processing in 1 direct single pass!")
             return full_text
             
-        print(f"\n🗺️  [Map Phase] Summarizing {len(chunks)} sections across the full document...")
+        # 2. STRATIFIED SAMPLING FOR LARGE / MEGA DOCUMENTS (50 to 6,000+ pages)
+        print(f"\n🗺️  [Large Document Engine] Document has {total_chars} chars (~{round(total_chars/2500)} pages).")
+        print(f"   ↳ Taking 4 strategic high-signal slices across Introduction, Body, and Conclusion...")
+        
+        slices = self.extract_strategic_slices(full_text, max_slices=4, slice_size=3500)
+        
         section_summaries = []
-        for idx, chunk in enumerate(chunks):
-            print(f"   ↳ Summarizing section {idx + 1}/{len(chunks)}...")
-            summary = self.summarize_section(chunk)
-            section_summaries.append(f"Section {idx + 1}:\n{summary}")
+        labels = ["Opening / Introduction", "Core Arguments (1/3)", "Evidence & Analysis (2/3)", "Conclusions & Takeaways"]
+        for idx, slice_content in enumerate(slices):
+            label = labels[idx] if idx < len(labels) else f"Section {idx+1}"
+            print(f"   ↳ Summarizing {label} ({idx + 1}/{len(slices)})...")
+            summary = self.summarize_section(slice_content)
+            section_summaries.append(f"### {label}:\n{summary}")
             
-        print(f"\n📉 [Reduce Phase] Synthesizing {len(section_summaries)} section summaries...")
+        print(f"\n📉 [Reduce Phase] Synthesizing master outline from {len(section_summaries)} sections...")
         master_outline = self.reduce_summaries(section_summaries)
         print(f"✓ Master document outline synthesized ({len(master_outline)} chars)")
         return master_outline
 
     def convert_pdf_to_podcast(self, pdf_path, output_path="podcast.mp3", max_pages=None, preferences=None):
-        """Main method: Convert PDF of any length to complete podcast using Map-Reduce."""
+        """Main method: Convert PDF of any length to complete podcast with adaptive fast-lane."""
         if preferences is None:
             preferences = {}
         
@@ -536,8 +560,8 @@ Unified Master Outline:"""
         if not text.strip():
             raise ValueError("No extractable text found in PDF. It might be scanned/image-only.")
 
-        # Map-Reduce: Compress full document into a rich master outline
-        master_content = self.map_reduce_document(text, chunk_size=3500)
+        # Adaptive Map-Reduce / Fast Lane
+        master_content = self.map_reduce_document(text)
         
         print("\n🎙️  Generating comprehensive podcast script from full document context...")
         script = self.generate_podcast_script(master_content, preferences)
