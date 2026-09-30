@@ -97,29 +97,26 @@ class PDFToPodcastConverter:
         if humor:
             humor_instruction = "\n- Add occasional light humor, relatable analogies, and personality\n- Make it engaging and enjoyable, not dry"
         
-        prompt = f"""You are a podcast script writer. Create a {tone} conversation between HOST and EXPERT.
+        prompt = f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
+You are an expert podcast writer creating an authentic, engaging dual-speaker audio show called NoteCast.
+The HOST is curious and conversational ({tone_style['host']}).
+The EXPERT is insightful and articulate ({tone_style['expert']}).
 
-HOST personality: {tone_style['host']}
-EXPERT personality: {tone_style['expert']}
+TONE & STYLE: {tone_style['style']}
+LENGTH TARGET: {length_guides[length]}
+DEPTH LEVEL: {depth_guides[depth]}{humor_instruction}
 
-Style: {tone_style['style']}
-
-Length: {length_guides[length]}
-Depth: {depth_guides[depth]}{humor_instruction}
-
-STRICT FORMAT - Each line must start with HOST: or EXPERT:
-
-Example:
-HOST: Welcome! What fascinating insights do we have today?
-EXPERT: We're diving into some really interesting concepts from this document.
-HOST: I'm intrigued! Break it down for me.
-EXPERT: Let me explain the key ideas in a way that makes sense.
-
-Content to discuss:
+STRICT PRODUCTION RULES:
+1. Every single line MUST begin with either "HOST:" or "EXPERT:".
+2. ZERO FILLER: Never start with generic filler lines like "What fascinating insights do we have today?" or "We're diving into some really interesting concepts".
+3. IMMEDIATE IMMERSION: The HOST must open the episode by immediately introducing the specific subject or title of the document in sentence 1.
+4. SUBSTANCE & DEPTH: Discuss the specific names, arguments, findings, and conclusions found in the provided content.
+5. NATURAL FLOW: Create lively dialogue with authentic reactions, thoughtful questions, and clear takeaways.<|eot_id|><|start_header_id|>user<|end_header_id|>
+Document Content to discuss:
 {text_sample}
 
-Create the podcast dialogue following the format above:"""
-        
+Generate the full podcast script dialogue:<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+"""
         return prompt
     
     def generate_podcast_script(self, text, preferences=None):
@@ -151,7 +148,7 @@ Create the podcast dialogue following the format above:"""
                     "options": {
                         "temperature": 0.85 if preferences.get('humor') else 0.7,
                         "num_predict": max_tokens,
-                        "stop": ["USER:", "ASSISTANT:"],
+                        "stop": ["USER:", "ASSISTANT:", "<|eot_id|>", "<|start_header_id|>"],
                         "num_ctx": 4096
                     }
                 },
