@@ -13,7 +13,7 @@ class PDFToPodcastConverter:
     def __init__(self, openai_api_key=None, elevenlabs_api_key=None, anthropic_api_key=None):
         """Initialize - no API keys needed!"""
         self.ollama_url = "http://localhost:11434/api/generate"
-        print("✓ Using free local AI models")
+        print("[OK] Using free local AI models")
         
     def extract_text_from_pdf(self, pdf_path, max_pages=None):
         """Extract text content from PDF up to max_pages."""
@@ -141,7 +141,7 @@ Create the podcast dialogue following the format above:"""
         max_tokens = length_tokens.get(preferences.get('length', 'medium'), 950)
         
         try:
-            print(f"🤖 Generating {preferences.get('tone', 'conversational')} script with Ollama (llama3.2:latest, 4k ctx)...")
+            print(f"Generating {preferences.get('tone', 'conversational')} script with Ollama (llama3.2:latest, 4k ctx)...")
             response = requests.post(
                 self.ollama_url,
                 json={
@@ -244,13 +244,13 @@ EXPERT: My pleasure! I hope this has been valuable for everyone listening."""
                     'text': text
                 })
         
-        print(f"\n✓ Parsed {len(cleaned_dialogue)} dialogue segments")
+        print(f"\n[OK] Parsed {len(cleaned_dialogue)} dialogue segments")
         
         for i, seg in enumerate(cleaned_dialogue[:3]):
             print(f"  {i+1}. {seg['speaker']}: {seg['text'][:60]}...")
         
         if not cleaned_dialogue:
-            print("⚠ No dialogue parsed from LLM output, using fallback script")
+            print("[WARN] No dialogue parsed from LLM output, using fallback script")
             cleaned_dialogue = [
                 {'speaker': 'HOST', 'text': 'Welcome to this podcast episode about your document.'},
                 {'speaker': 'EXPERT', 'text': 'Thank you for having me. Let me share the key insights from this material.'}
@@ -259,30 +259,29 @@ EXPERT: My pleasure! I hope this has been valuable for everyone listening."""
         return cleaned_dialogue
     
     def synthesize_speech(self, dialogue, output_dir="podcast_output"):
-        """Convert dialogue to speech using Edge TTS (free, better quality)."""
+        """Convert dialogue to speech using Edge TTS with automated retry & fallback voices."""
         import asyncio
         import edge_tts
         import random
+        import re
         
         Path(output_dir).mkdir(exist_ok=True)
-        audio_files = []
         
-        # High-quality HD & natural expressive neural voices from Edge TTS
+        # High-stability, verified natural expressive neural voices from Edge TTS
         male_voices = [
-            'en-US-AndrewNeural',      # Warm, expressive US Male
-            'en-US-BrianNeural',       # Natural US Male
-            'en-US-ChristopherNeural', # Deep US Male
+            'en-US-GuyNeural',         # Ultra-reliable, natural US Male
+            'en-US-BrianNeural',       # Warm US Male
+            'en-US-ChristopherNeural', # Deep, clear US Male
             'en-GB-RyanNeural',        # Professional UK Male
         ]
         
         female_voices = [
-            'en-US-AvaNeural',         # Expressive HD US Female
+            'en-US-AriaNeural',        # Ultra-reliable, expressive US Female
+            'en-US-JennyNeural',       # Friendly, clear US Female
             'en-US-EmmaNeural',        # Conversational US Female
-            'en-US-MichelleNeural',    # Friendly US Female
-            'en-GB-SoniaNeural',       # Clear UK Female
+            'en-GB-SoniaNeural',       # Smooth UK Female
         ]
         
-        # Randomly choose speaker gender combo for each podcast run
         # 50% chance: Host=Male, Expert=Female; 50% chance: Host=Female, Expert=Male
         if random.choice([True, False]):
             host_voice = random.choice(male_voices)
@@ -296,52 +295,70 @@ EXPERT: My pleasure! I hope this has been valuable for everyone listening."""
             'EXPERT': expert_voice
         }
         
-        print(f"\n🎙️  Selected Voice Pair -> HOST: {voices['HOST']} | EXPERT: {voices['EXPERT']}")
+        # Rock-solid fallback voices if the primary chosen voice hits server throttling
+        fallback_voices = {
+            'HOST': 'en-US-GuyNeural' if 'Female' in host_voice else 'en-US-AriaNeural',
+            'EXPERT': 'en-US-AriaNeural' if 'Male' in expert_voice else 'en-US-GuyNeural'
+        }
         
-        async def generate_audio(text, voice, filename):
-            """Generate single audio file."""
-            communicate = edge_tts.Communicate(text, voice)
-            await communicate.save(filename)
-        
+        print(f"\n[VOICES] HOST: {voices['HOST']} | EXPERT: {voices['EXPERT']}")
         print(f"Generating audio with Edge TTS for {len(dialogue)} segments...")
+        
+        def clean_for_tts(raw_text):
+            # Remove stage directions like (laughs), [applause], *chuckles*, *giggles*
+            text = re.sub(r'[\(\[\*][^\)\]\*]*[\)\]\*]', '', raw_text)
+            # Remove XML/HTML tags
+            text = re.sub(r'[<>]', '', text)
+            # Replace ampersands with words
+            text = text.replace('&', ' and ')
+            # Clean whitespace
+            text = re.sub(r'\s+', ' ', text).strip()
+            return text
 
-        
-        for idx, segment in enumerate(dialogue):
-            speaker = segment['speaker']
-            text = segment['text']
+        async def run_batch_synthesis():
+            audio_files = []
             
-            if not text or len(text.strip()) < 3 or text.strip().upper() in ['HOST', 'EXPERT', 'HOST:', 'EXPERT:']:
-                print(f"  Skipping orphan/empty segment {idx + 1}")
-                continue
-            
-            print(f"  [{idx + 1}/{len(dialogue)}] {speaker}: {text[:50]}...")
-            
-            max_retries = 2
-            for attempt in range(max_retries):
-                try:
-                    filename = f"{output_dir}/segment_{idx:03d}_{speaker}.mp3"
-                    
-                    asyncio.run(generate_audio(text, voices[speaker], filename))
-                    
-                    if os.path.exists(filename) and os.path.getsize(filename) > 1000:
-                        audio_files.append(filename)
-                        print(f"    ✓ Generated ({os.path.getsize(filename)} bytes)")
-                        break
-                    else:
-                        print(f"    ✗ File too small (attempt {attempt + 1})")
-                        if attempt < max_retries - 1:
-                            import time
-                            time.sleep(1)
+            for idx, segment in enumerate(dialogue):
+                speaker = segment['speaker']
+                raw_text = segment['text']
+                
+                clean_text = clean_for_tts(raw_text)
+                if not clean_text or len(clean_text) < 2:
+                    clean_text = "Indeed."
+                
+                filename = f"{output_dir}/segment_{idx:03d}_{speaker}.mp3"
+                print(f"  [{idx + 1}/{len(dialogue)}] {speaker}: {clean_text[:50]}...")
+                
+                success = False
+                max_attempts = 4
+                
+                for attempt in range(1, max_attempts + 1):
+                    try:
+                        # Attempts 1-2: use primary chosen voice. Attempts 3-4: use fallback voice.
+                        voice_to_use = voices[speaker] if attempt <= 2 else fallback_voices[speaker]
                         
-                except Exception as e:
-                    print(f"    ✗ Error (attempt {attempt + 1}): {e}")
-                    if attempt < max_retries - 1:
-                        import time
-                        time.sleep(2)
-                    else:
-                        print(f"    ✗ Failed after {max_retries} attempts, skipping segment")
-        
-        print(f"\n✓ Successfully generated {len(audio_files)} audio segments")
+                        communicate = edge_tts.Communicate(clean_text, voice_to_use)
+                        await communicate.save(filename)
+                        
+                        if os.path.exists(filename) and os.path.getsize(filename) > 200:
+                            audio_files.append(filename)
+                            print(f"    [OK] Generated ({os.path.getsize(filename)} bytes)")
+                            success = True
+                            break
+                        else:
+                            print(f"    [FAIL] Empty audio file received (attempt {attempt}/{max_attempts})")
+                            await asyncio.sleep(1.0 * attempt)
+                    except Exception as e:
+                        print(f"    [FAIL] TTS network retry ({attempt}/{max_attempts}): {e}")
+                        await asyncio.sleep(1.5 * attempt)
+                
+                if not success:
+                    print(f"    [WARN] Segment {idx + 1} could not be synthesized after {max_attempts} attempts.")
+            
+            return audio_files
+
+        audio_files = asyncio.run(run_batch_synthesis())
+        print(f"\n[OK] Successfully generated {len(audio_files)}/{len(dialogue)} audio segments")
         return audio_files
     
     def combine_audio_files(self, audio_files, output_path="final_podcast.mp3"):
@@ -350,7 +367,7 @@ EXPERT: My pleasure! I hope this has been valuable for everyone listening."""
             print("No audio files to combine!")
             return None
         
-        print(f"\n🎧 Combining {len(audio_files)} audio segments...")
+        print(f"\n[AUDIO] Combining {len(audio_files)} audio segments...")
         print(f"Output: {output_path}")
         
         try:
@@ -541,9 +558,9 @@ Unified Master Outline:"""
             summary = self.summarize_section(slice_content)
             section_summaries.append(f"### {label}:\n{summary}")
             
-        print(f"\n📉 [Reduce Phase] Synthesizing master outline from {len(section_summaries)} sections...")
+        print(f"\n[Reduce Phase] Synthesizing master outline from {len(section_summaries)} sections...")
         master_outline = self.reduce_summaries(section_summaries)
-        print(f"✓ Master document outline synthesized ({len(master_outline)} chars)")
+        print(f"[OK] Master document outline synthesized ({len(master_outline)} chars)")
         return master_outline
 
     def convert_pdf_to_podcast(self, pdf_path, output_path="podcast.mp3", max_pages=None, preferences=None):
@@ -551,11 +568,11 @@ Unified Master Outline:"""
         if preferences is None:
             preferences = {}
         
-        print(f"📄 Extracting text from PDF: {pdf_path}")
-        print(f"🎨 Preferences: {preferences}")
+        print(f"Extracting text from PDF: {pdf_path}")
+        print(f"Preferences: {preferences}")
         
         text = self.extract_text_from_pdf(pdf_path, max_pages=max_pages)
-        print(f"📝 Extracted {len(text)} characters from document")
+        print(f"Extracted {len(text)} characters from document")
         
         if not text.strip():
             raise ValueError("No extractable text found in PDF. It might be scanned/image-only.")
@@ -563,16 +580,16 @@ Unified Master Outline:"""
         # Adaptive Map-Reduce / Fast Lane
         master_content = self.map_reduce_document(text)
         
-        print("\n🎙️  Generating comprehensive podcast script from full document context...")
+        print("\nGenerating comprehensive podcast script from full document context...")
         script = self.generate_podcast_script(master_content, preferences)
         all_dialogue = self.parse_dialogue(script)
         
         script_path = output_path.replace('.mp3', '_script.json')
         with open(script_path, 'w') as f:
             json.dump(all_dialogue, f, indent=2)
-        print(f"✓ Script saved to: {script_path}")
+        print(f"[OK] Script saved to: {script_path}")
         
-        print(f"\n🎵 Synthesizing speech with Edge TTS...")
+        print(f"\nSynthesizing speech with Edge TTS...")
         audio_files = self.synthesize_speech(all_dialogue, output_dir=os.path.dirname(output_path) or ".")
         
         print(f"\n🎧 Combining audio segments...")
